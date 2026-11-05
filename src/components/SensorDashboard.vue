@@ -14,17 +14,17 @@
     <!-- Hoofdinhoud -->
     <main class="main-content">
       <!-- Header -->
+      <!-- Header -->
       <header class="dashboard-header">
         <div>
           <h1 class="title">Vertical Farm Monitor</h1>
           <p class="subtitle">Real-time sensor data en analyse</p>
         </div>
-        <div class="status-badge" :class="{ 'is-live': !loading }">
-          <span class="pulse"></span>
-          {{ loading ? 'Sensoren uitlezen...' : 'Systeem Online' }}
+        <div class="status-badge" :class="{ 'is-live': isOnline, 'is-error': !isOnline && !loading }">
+          <span class="pulse" v-if="isOnline"></span>
+          {{ loading ? 'Verbinden...' : (isOnline ? 'Systeem Online' : 'Systeem Offline') }}
         </div>
       </header>
-
       <!-- Sensor Grid -->
       <div class="sensor-grid">
         <div class="card temp-card">
@@ -105,25 +105,27 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 import Chart from 'chart.js/auto';
+import axios from 'axios';
 
 // --- Status & Config ---
 const deviceId = ref('devicelars');
-const loading = ref(false);
-const lastUpdated = ref('Zojuist');
+const loading = ref(true); // Begin met laden
+const isOnline = ref(false); // Nieuwe variabele om echte status bij te houden
+const lastUpdated = ref('Nog geen data');
 let pollingInterval: number | undefined;
 let chartInstance: any = null;
 const chartCanvas = ref<HTMLCanvasElement | null>(null);
 
-// --- State (Startwaardes) ---
+// --- State ---
 const sensorData = ref({
-  distance: 120,
-  ph: 6.0,
-  tds: 650,
-  temperature: 21.5
+  distance: 0,
+  ph: 0,
+  tds: 0,
+  temperature: 0
 });
 
 const logs = ref([
-  { time: new Date().toLocaleTimeString('nl-NL'), message: 'App opgestart. Sensoren kalibreren...', type: 'info' }
+  { time: new Date().toLocaleTimeString('nl-NL'), message: 'App opgestart. Verbinden met Node-RED API...', type: 'info' }
 ]);
 
 const history = {
@@ -159,40 +161,34 @@ const updateChart = () => {
 };
 
 const fetchSensorData = async () => {
-  // === ECHTE DATA (NODE-RED) ===
-  // Haal de comments hieronder weg als Node-RED werkt. 
-  // Zet dan de DUMMY DATA code hieronder in comments!
-
-  /*
   try {
-    loading.value = true;
     const response = await axios.get(`http://JOUW-NODE-RED-IP:1880/api/sensors/${deviceId.value}`);
+
+    // Update de state
     sensorData.value = response.data;
-    lastUpdated.value = new Date().toLocaleTimeString('nl-NL');
-    updateChart();
-  } catch (error) {
-    addLog('API Verbindingsfout met Node-RED', 'warn');
-  } finally {
-    loading.value = false;
-  }
-  */
-
-  // === DUMMY DATA SIMULATIE ===
-  loading.value = true;
-  setTimeout(() => {
-    sensorData.value.temperature += (Math.random() - 0.5) * 0.4;
-    sensorData.value.ph += (Math.random() - 0.5) * 0.1;
-    sensorData.value.tds += (Math.random() - 0.5) * 5;
-    sensorData.value.distance += (Math.random() - 0.5) * 2;
 
     lastUpdated.value = new Date().toLocaleTimeString('nl-NL');
-    loading.value = false;
+
+    // Als we hier komen, is de verbinding gelukt!
+    if (!isOnline.value) addLog('Verbinding hersteld met Node-RED', 'info');
+    isOnline.value = true;
     updateChart();
 
     if (sensorData.value.ph > 6.5) {
       addLog('Waarschuwing: pH niveau stijgt boven 6.5', 'warn');
     }
-  }, 200);
+
+  } catch (error) {
+    console.error("Fout bij ophalen van data:", error);
+
+    // Alleen een log toevoegen als we zojuist offline zijn gegaan (voorkomt spam in je logboek)
+    if (isOnline.value || loading.value) {
+      addLog('Kan geen verbinding maken met Node-RED', 'warn');
+    }
+    isOnline.value = false;
+  } finally {
+    loading.value = false; // Haal loading weg na de eerste poging
+  }
 };
 
 const initChart = () => {
@@ -202,30 +198,12 @@ const initChart = () => {
       data: {
         labels: history.labels,
         datasets: [
-          {
-            label: 'Temperatuur (°C)',
-            data: history.temp,
-            borderColor: '#ef4444',
-            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-            yAxisID: 'y',
-            tension: 0.4,
-            fill: true
-          },
-          {
-            label: 'pH Waarde',
-            data: history.ph,
-            borderColor: '#8b5cf6',
-            backgroundColor: 'rgba(139, 92, 246, 0.1)',
-            yAxisID: 'y1',
-            tension: 0.4,
-            fill: true
-          }
+          { label: 'Temperatuur (°C)', data: history.temp, borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', yAxisID: 'y', tension: 0.4, fill: true },
+          { label: 'pH Waarde', data: history.ph, borderColor: '#8b5cf6', backgroundColor: 'rgba(139, 92, 246, 0.1)', yAxisID: 'y1', tension: 0.4, fill: true }
         ]
       },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
+        responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
         scales: {
           y: { type: 'linear', display: true, position: 'left', min: 18, max: 26 },
           y1: { type: 'linear', display: true, position: 'right', min: 4, max: 8, grid: { drawOnChartArea: false } }
@@ -237,8 +215,8 @@ const initChart = () => {
 
 onMounted(() => {
   initChart();
-  fetchSensorData();
-  pollingInterval = setInterval(fetchSensorData, 3000);
+  fetchSensorData(); // Haal direct data op
+  pollingInterval = setInterval(fetchSensorData, 3000); // En blijf dat elke 3 seconden doen (zonder de hele app op "loading" te zetten)
 });
 
 onUnmounted(() => {
